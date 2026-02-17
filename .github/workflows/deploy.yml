@@ -1,21 +1,22 @@
 name: Deploy to Firebase
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Install Dependencies
+      - uses: actions/checkout@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Deps
         run: cd functions && npm install
-
-      - name: Deploy to Firebase
+      - name: Deploy
         uses: w9jds/firebase-action@master
         with:
-          args: deploy --only functions
+          # Adicionamos o ID do projeto aqui para o Firebase não ficar perdido
+          args: deploy --only functions --project zap-agenda-ai
         env:
           GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
