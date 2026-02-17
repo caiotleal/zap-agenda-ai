@@ -20,3 +20,4 @@ jobs:
           args: deploy --only functions --project zap-agenda-ai
         env:
           GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PRE_DEPLOY_COMMAND: firebase functions:config:set gemini.key="${{ secrets.GEMINI_API_KEY }}"
