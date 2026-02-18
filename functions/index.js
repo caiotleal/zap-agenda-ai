@@ -75,16 +75,15 @@ async function createCalendarEvent(eventData, phoneNumber) {
 }
 
 exports.whatsappWebhook = onRequest(async (req, res) => {
-  if (!GEMINI_API_KEY) {
-    console.error("Configuração ausente: GEMINI_API_KEY não definida.");
-    return res.status(500).send("Configuração do servidor incompleta.");
-  }
-
   switch (req.method) {
     case "GET": {
       const mode = req.query["hub.mode"];
       const token = req.query["hub.verify_token"];
       const challenge = req.query["hub.challenge"];
+
+      if (!mode && !token && !challenge) {
+        return res.status(200).send("Webhook ativo.");
+      }
 
       if (!WEBHOOK_VERIFY_TOKEN) {
         console.error("Configuração ausente: WHATSAPP_VERIFY_TOKEN não definida.");
@@ -100,6 +99,11 @@ exports.whatsappWebhook = onRequest(async (req, res) => {
     }
 
     case "POST": {
+      if (!GEMINI_API_KEY) {
+        console.error("Configuração ausente: GEMINI_API_KEY não definida.");
+        return res.status(500).send("Configuração do servidor incompleta.");
+      }
+
       const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
       const userText = message?.text?.body;
       const phoneNumber = message?.from;
