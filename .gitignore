@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+functions/node_modules/
+
+# Firebase / Google Cloud local artifacts
+.firebase/
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

@@ -2,96 +2,134 @@ const { onRequest } = require("firebase-functions/v2/https");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { google } = require("googleapis");
 
-// Inicialização das APIs
-// Nota: Certifique-se de configurar a variável GEMINI_API_KEY no Firebase ou GitHub Secrets
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const calendar = google.calendar("v3");
+const TIME_ZONE = "America/Sao_Paulo";
+const WEBHOOK_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// Autenticação com o Google Calendar
+const calendar = google.calendar("v3");
 const auth = new google.auth.GoogleAuth({
   scopes: ["https://www.googleapis.com/auth/calendar"],
 });
 
-exports.whatsappWebhook = onRequest(async (req, res) => {
-  
-  // 1. VALIDAÇÃO DO WEBHOOK (Aperto de mão com a Meta)
-  if (req.method === "GET") {
-    const mode = req.query["hub.mode"];
-    const token = req.query["hub.verify_token"];
-    const challenge = req.query["hub.challenge"];
+function buildPrompt(userText) {
+  const today = new Date().toLocaleDateString("pt-BR", {
+    timeZone: TIME_ZONE,
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
 
-    // Use o mesmo token que você configurou no painel da Meta
-    if (mode === "subscribe" && token === "SuaSenhaSeguraAqui") {
-      console.log("Webhook validado!");
-      return res.status(200).send(challenge);
-    } else {
+  return `Você é um assistente de agendamento confiável.
+Extraia os dados da mensagem: "${userText}".
+Hoje é ${today}.
+Retorne APENAS um JSON no formato:
+{
+  "summary": "Título do evento",
+  "start": "ISO_DATE_TIME",
+  "end": "ISO_DATE_TIME",
+  "description": "Notas adicionais"
+}
+Se não houver hora de término, assuma 1 hora de duração.`;
+}
+
+function parseEventData(rawText) {
+  try {
+    const parsed = JSON.parse(rawText);
+    const hasRequiredFields = parsed?.summary && parsed?.start && parsed?.end;
+
+    if (!hasRequiredFields) {
+      throw new Error("Resposta do modelo sem campos obrigatórios.");
+    }
+
+    return {
+      summary: String(parsed.summary),
+      start: String(parsed.start),
+      end: String(parsed.end),
+      description: parsed.description ? String(parsed.description) : "",
+    };
+  } catch (error) {
+    throw new Error(`Não foi possível interpretar o JSON retornado pelo Gemini: ${error.message}`);
+  }
+}
+
+async function createCalendarEvent(eventData, phoneNumber) {
+  const authClient = await auth.getClient();
+
+  await calendar.events.insert({
+    auth: authClient,
+    calendarId: "primary",
+    resource: {
+      summary: eventData.summary,
+      description: `${eventData.description} (Agendado via WhatsApp: ${phoneNumber})`.trim(),
+      start: {
+        dateTime: eventData.start,
+        timeZone: TIME_ZONE,
+      },
+      end: {
+        dateTime: eventData.end,
+        timeZone: TIME_ZONE,
+      },
+    },
+  });
+}
+
+exports.whatsappWebhook = onRequest(async (req, res) => {
+  if (!GEMINI_API_KEY) {
+    console.error("Configuração ausente: GEMINI_API_KEY não definida.");
+    return res.status(500).send("Configuração do servidor incompleta.");
+  }
+
+  switch (req.method) {
+    case "GET": {
+      const mode = req.query["hub.mode"];
+      const token = req.query["hub.verify_token"];
+      const challenge = req.query["hub.challenge"];
+
+      if (!WEBHOOK_VERIFY_TOKEN) {
+        console.error("Configuração ausente: WHATSAPP_VERIFY_TOKEN não definida.");
+        return res.sendStatus(500);
+      }
+
+      if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
+        console.log("Webhook validado com sucesso.");
+        return res.status(200).send(challenge);
+      }
+
       return res.sendStatus(403);
     }
-  }
 
-  // 2. PROCESSAMENTO DA MENSAGEM (POST)
-  if (req.method === "POST") {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    case "POST": {
+      const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const userText = message?.text?.body;
+      const phoneNumber = message?.from;
 
-    if (message?.text?.body) {
-      const textoUsuario = message.text.body;
-      const numeroUsuario = message.from;
+      if (!userText || !phoneNumber) {
+        return res.sendStatus(200);
+      }
 
       try {
-        // Configuração do modelo Gemini
-        const model = genAI.getGenerativeModel({ 
+        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({
           model: "gemini-2.0-flash",
-          generationConfig: { responseMimeType: "application/json" }
+          generationConfig: { responseMimeType: "application/json" },
         });
 
-        // Prompt com a data de hoje fixa conforme nossa conversa
-        const prompt = `Você é um assistente de agendamento confiante. 
-        Extraia os dados da mensagem: "${textoUsuario}". 
-        Hoje é terça-feira, 17 de fevereiro de 2026.
-        Retorne APENAS um JSON no formato:
-        {
-          "summary": "Título do evento",
-          "start": "ISO_DATE_TIME",
-          "end": "ISO_DATE_TIME",
-          "description": "Notas adicionais"
-        }
-        Se não houver hora de término, assuma 1 hora de duração.`;
-
+        const prompt = buildPrompt(userText);
         const result = await model.generateContent(prompt);
-        const eventData = JSON.parse(result.response.text());
+        const eventData = parseEventData(result.response.text());
 
-        // Inserção no Google Calendar
-        const authClient = await auth.getClient();
-        
-        await calendar.events.insert({
-          auth: authClient,
-          calendarId: "primary", // Garante que use a agenda da conta de serviço ou a que você compartilhou
-          resource: {
-            summary: eventData.summary,
-            description: `${eventData.description} (Agendado via WhatsApp: ${numeroUsuario})`,
-            start: { 
-              dateTime: eventData.start, 
-              timeZone: "America/Sao_Paulo" 
-            },
-            end: { 
-              dateTime: eventData.end, 
-              timeZone: "America/Sao_Paulo" 
-            },
-          },
-        });
+        await createCalendarEvent(eventData, phoneNumber);
 
-        console.log(`Evento "${eventData.summary}" criado com sucesso para o usuário ${numeroUsuario}`);
-
+        console.log(`Evento "${eventData.summary}" criado para o usuário ${phoneNumber}.`);
       } catch (error) {
-        console.error("Erro ao processar com Gemini ou Agenda:", error);
+        console.error("Erro ao processar mensagem do WhatsApp:", error);
       }
+
+      return res.sendStatus(200);
     }
 
-    // O WhatsApp exige um status 200 rápido para não reenviar a mensagem
-    return res.sendStatus(200);
+    default:
+      return res.sendStatus(404);
   }
-
-  return res.sendStatus(404);
 });
